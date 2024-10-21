@@ -1,6 +1,8 @@
 import ipaddress
 import re
 
+from src.exceptions import PeerValidationError
+
 """
 host
 host_formated == host for hostname and ipv4
@@ -8,10 +10,10 @@ host_formated == host for hostname and ipv4
 class Peer:
     def __init__(self, host_str, port:int):
         self.port = port
-        self.host_formated = ''
-        self.host = ''
+        self.host_formated = f'{host_str}:{port}'
+        self.host = host_str
         if not is_valid_peer(self):
-            raise Exception("Peer creation is false")
+            raise PeerValidationError("Peer creation is false", "PeerValidationError")
 
     def __str__(self) -> str:
         return f"{self.host_formated}:{self.port}"

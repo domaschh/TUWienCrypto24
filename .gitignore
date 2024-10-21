@@ -4,3 +4,4 @@
 .vscode/
 peers.csv
 ./venv
+/venv

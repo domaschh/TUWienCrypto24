@@ -3,11 +3,13 @@ import csv
 from Peer import Peer, is_valid_peer
 from typing import Iterable, Set
 
+from src.exceptions import PeerValidationError
+
 PEER_DB_FILE = "peers.csv"
 
 def store_peer(peer: Peer, existing_peers: Iterable[Peer] = None):
     if not is_valid_peer(peer):
-        return #TODO handle if not valid peer
+        raise PeerValidationError("Peer is wrong", "PeerValidationError")
 
     peers = set(existing_peers) if existing_peers else load_peers()
     peers.add(peer)
@@ -24,9 +26,13 @@ def load_peers() -> Set[Peer]:
             reader = csv.reader(f)
             for row in reader:
                 if len(row) == 2:
-                    peer = Peer(row[0], int(row[1]))
-                    if is_valid_peer(peer):
+                    try:
+                        peer = Peer(row[0], int(row[1]))
                         peers.add(peer)
+                    except PeerValidationError:
+                        #TODO decide on what todo if peer is false? I guess
+                        pass
     except FileNotFoundError:
+        #TODO decide todo
         pass
     return peers
