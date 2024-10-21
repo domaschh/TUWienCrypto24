@@ -1,3 +1,5 @@
+from typing import Dict, Any
+
 from Peer import Peer
 import constants as const
 from message.msgexceptions import *
@@ -15,6 +17,8 @@ import re
 import sqlite3
 import sys
 
+from src.exceptions import HandshakeException
+
 PEERS = set()
 CONNECTIONS = dict()
 BACKGROUND_TASKS = set()
@@ -22,6 +26,8 @@ BLOCK_VERIFY_TASKS = dict()
 BLOCK_WAIT_LOCK = None
 TX_WAIT_LOCK = None
 MEMPOOL = mempool.Mempool(const.GENESIS_BLOCK_ID, {})
+active_connections: Dict[tuple, asyncio.StreamWriter] = {}
+
 LISTEN_CFG = {
         "address": const.ADDRESS,
         "port": const.PORT
@@ -32,13 +38,40 @@ def add_peer(peer):
     PEERS.add(peer)
 
 # Add connection if not already open
-def add_connection(peer, queue):
-    pass # TODO
+def add_connection(peer: tuple, writer: asyncio.StreamWriter):
+    """
+    Add a new connection to the active connections dictionary.
+    """
+    active_connections[peer] = writer
+    print(f"Added new connection to {peer}")
+
 
 # Delete connection
-def del_connection(peer: Peer):
-    CONNECTIONS.pop(peer.__hash__())
-    pass # TODO
+def del_connection(peer: tuple):
+    """
+    Remove a connection from the active connections dictionary.
+    """
+    if peer in active_connections:
+        del active_connections[peer]
+        print(f"Removed connection to {peer}")
+    else:
+        print(f"No active connection found for {peer}")
+
+
+async def broadcast_msg(msg: Dict[str, Any]):
+    """
+    Broadcast a message to all active connections.
+    """
+    for peer, writer in active_connections.items():
+        try:
+            await write_msg(writer, msg)
+            print(f"Broadcasted message to {peer}: {msg}")
+        except Exception as e:
+            print(f"Error broadcasting message to {peer}: {str(e)}")
+            # If there's an error sending the message, we might want to close the connection
+            writer.close()
+            await writer.wait_closed()
+            del_connection(peer)
 
 # Make msg objects
 def mk_error_msg(error_str, error_name):
@@ -105,8 +138,14 @@ def parse_msg(msg_str):
     pass # TODO
 
 # Send data over the network as a message
-async def write_msg(writer, msg_dict):
-    pass # TODO
+async def write_msg(writer: asyncio.StreamWriter, msg: Dict[str, Any]):
+    writer.write(json.dumps(msg).encode() + b'\n')
+    await writer.drain()
+
+async def read_msg(reader: asyncio.StreamReader) -> Dict[str, Any]:
+    data = await reader.readline()
+    return json.loads(data.decode())
+
 
 # Check if message contains no invalid keys,
 # raises a MalformedMsgException
@@ -116,8 +155,29 @@ def validate_allowed_keys(msg_dict, allowed_keys, msg_type):
 
 # Validate the hello message
 # raises an exception
-def validate_hello_msg(msg_dict):
-    pass # TODO
+def validate_hello_msg(msg: Dict[str, Any]):
+    if msg.get("type") != "hello":
+        raise HandshakeException("First message must be a hello message")
+    if "version" not in msg or "agent" not in msg:
+        raise HandshakeException("Missing required keys in hello message")
+    if not msg["version"].startswith("0.10."):
+        raise HandshakeException("Invalid version format")
+    if len(msg["agent"]) > 128 or not msg["agent"].isascii():
+        raise HandshakeException("Invalid agent format")
+
+async def perform_handshake(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    # Send our hello message
+    await write_msg(writer, mk_hello_msg())
+
+    # Wait for their hello message
+    try:
+        msg = await asyncio.wait_for(read_msg(reader), timeout=const.HELLO_MSG_TIMEOUT)
+        validate_hello_msg(msg)
+    except asyncio.TimeoutError:
+        raise HandshakeException("Handshake timeout")
+    except json.JSONDecodeError:
+        raise HandshakeException("Invalid JSON in hello message")
+
 
 # returns true iff host_str is a valid hostname
 def validate_hostname(host_str):
@@ -278,8 +338,19 @@ async def handle_mempool_msg(msg_dict):
     pass # TODO
 
 # Helper function
-async def handle_queue_msg(msg_dict, writer):
-    pass # TODO
+async def handle_queue_msg(msg: Dict[str, Any], writer: asyncio.StreamWriter):
+    """
+    Handle messages from the outgoing queue and send them to the peer.
+    """
+    try:
+        await write_msg(writer, msg)
+        print(f"Sent message to {writer.get_extra_info('peername')}: {msg}")
+    except Exception as e:
+        print(f"Error sending message to {writer.get_extra_info('peername')}: {str(e)}")
+        # If there's an error sending the message, we might want to close the connection
+        writer.close()
+        await writer.wait_closed()
+        del_connection(writer.get_extra_info('peername'))
 
 # how to handle a connection
 async def handle_connection(reader, writer):
@@ -304,8 +375,10 @@ async def handle_connection(reader, writer):
 
     try:
         # Send initial messages
-
         # Complete handshake
+        await perform_handshake(reader, writer)
+
+        await write_msg(writer, mk_getpeers_msg())
 
         msg_str = None
         while True:
@@ -333,10 +406,12 @@ async def handle_connection(reader, writer):
 
             print(f"Received: {msg_str}")
             # todo handle message
-            
+
             # for now, close connection
             raise MessageException("closing connection")
-
+    except HandshakeException as e:
+        print(f"{peer}: Handshake error: {str(e)}")
+        await write_msg(writer, mk_error_msg(str(e), "INVALID_HANDSHAKE"))
     except asyncio.exceptions.TimeoutError:
         print("{}: Timeout".format(peer))
         try:
@@ -383,11 +458,12 @@ async def listen():
 
 # bootstrap peers. connect to hardcoded peers
 async def bootstrap():
-    pass # TODO
+    for peer in PEERS:
+        await connect_to_node(peer)
 
 # connect to some peers
 def resupply_connections():
-    pass # TODO
+    pass # TODO decide on when to connect to how many etc. decide on policy?
 
 
 async def init():
@@ -397,7 +473,7 @@ async def init():
     TX_WAIT_LOCK = asyncio.Condition()
 
     PEERS.update(peer_db.load_peers())
-
+    PEERS.add(Peer("afterhostingaddresss", const.PORT))#TODO how do we find out or ip address or DNS??
     bootstrap_task = asyncio.create_task(bootstrap())
     listen_task = asyncio.create_task(listen())
 
@@ -410,6 +486,8 @@ async def init():
         resupply_connections()
 
         await asyncio.sleep(const.SERVICE_LOOP_DELAY)
+
+        #todo why is this here? ij loop or outside loop?
 
     await bootstrap_task
     await listen_task
