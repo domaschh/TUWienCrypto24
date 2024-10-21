@@ -29,31 +29,58 @@ LISTEN_CFG = {
 
 # Add peer to your list of peers
 def add_peer(peer):
-    pass # TODO
+    PEERS.add(peer)
 
 # Add connection if not already open
 def add_connection(peer, queue):
     pass # TODO
 
 # Delete connection
-def del_connection(peer):
+def del_connection(peer: Peer):
+    CONNECTIONS.pop(peer.__hash__())
     pass # TODO
 
 # Make msg objects
 def mk_error_msg(error_str, error_name):
-    pass # TODO
+    return {
+        "type": "error",
+        "payload": {
+            "error": error_str,
+            "error_name": error_name
+        }
+    }
 
 def mk_hello_msg():
-    pass # TODO
+    return {
+        "type": "hello",
+        "version": const.VERSION,
+        "agent": const.AGENT
+    }
 
 def mk_getpeers_msg():
-    pass # TODO
+    return {
+        "type": "getpeers",
+    }
 
+# you find that a node is faulty, disconnect from it and remove it from your set of known
+#peers (i.e., forget them). Likewise, if you discover that a node is offline, you should forget
+#it. You must not, however, block further communication requests from this node or refuse to
+#add this node again to your known nodes if another node reports this as known. Note that
+#there may are (edge) cases where forgetting a node is not possible - we will not check this
+#behaviour.
 def mk_peers_msg():
-    pass # TODO
+    peers = peer_db.load_peers()
+    selected_peers: [Peer] = random.sample(list(peers), min(len(peers), const.MAX_PEERS_IN_MSG))
+    return {
+        "type": "peers",
+        "peers": [str(peer) for peer in selected_peers]
+    }
 
 def mk_getobject_msg(objid):
-    pass # TODO
+    return {
+        "type": "getobject",
+        "objectid": objid,
+    }
 
 def mk_object_msg(obj_dict):
     pass # TODO

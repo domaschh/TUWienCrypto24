@@ -1,4 +1,5 @@
 import ipaddress
+import re
 
 """
 host
@@ -9,7 +10,8 @@ class Peer:
         self.port = port
         self.host_formated = ''
         self.host = ''
-        # todo: validate host_str and populate properties
+        if not is_valid_peer(self):
+            raise Exception("Peer creation is false")
 
     def __str__(self) -> str:
         return f"{self.host_formated}:{self.port}"
@@ -23,3 +25,17 @@ class Peer:
 
     def __repr__(self) -> str:
         return f"Peer: {self}"
+
+def is_valid_peer(peer: Peer) -> bool:
+    # Implement peer validation logic based on the requirements
+    if not 1 <= peer.port <= 65535:
+        return False
+
+    if re.match(r'^(\d{1,3}\.){3}\d{1,3}$', peer.host):
+        # IPv4 address
+        return all(0 <= int(octet) <= 255 for octet in peer.host.split('.'))
+    else:
+        # DNS entry
+        return (re.match(r'^[a-zA-Z\d\.\-\_]{3,50}$', peer.host) and
+                '.' in peer.host[1:-1] and
+                any(c.isalpha() for c in peer.host))
