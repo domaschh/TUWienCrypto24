@@ -5,8 +5,8 @@ from typing import Dict, Any
 import jcs
 
 from Peer import Peer
-import constants as const
-from message.msgexceptions import *
+import src.constants as const
+from src.message.msgexceptions import *
 from jcs import canonicalize
 
 import mempool
