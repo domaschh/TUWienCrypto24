@@ -1,12 +1,12 @@
 import threading
+from pathlib import Path
 from sre_constants import error
 from typing import Dict, Any
 
 import jcs
 
 from Peer import Peer
-import src.constants as const
-from src.message.msgexceptions import *
+import constants as const
 from jcs import canonicalize
 
 import mempool
@@ -20,9 +20,12 @@ import random
 import re
 import sqlite3
 import sys
+project_root = Path(__file__).parent.parent
+sys.path.append(str(project_root))
 
-from src.Peer import is_valid_peer
-from src.exceptions import InvalidHandshakeException, InvalidFormatException
+from Peer import is_valid_peer
+from exceptions import InvalidHandshakeException, InvalidFormatException
+from message.msgexceptions import MalformedMsgException
 
 PEERS = set()
 CONNECTIONS = dict()
