@@ -1,5 +1,4 @@
 import threading
-from sre_constants import error
 from typing import Dict, Any
 
 import jcs
@@ -21,8 +20,8 @@ import re
 import sqlite3
 import sys
 
-from src.Peer import is_valid_peer
-from src.exceptions import InvalidHandshakeException, InvalidFormatException
+from Peer import is_valid_peer
+from exceptions import InvalidHandshakeException, InvalidFormatException
 
 PEERS = set()
 CONNECTIONS = dict()
@@ -137,7 +136,7 @@ def parse_msg(msg_str):
         json_msg = json.loads(msg_str.decode())
         canon = json.loads(canonicalize(json_msg))
         return canon
-    except error as e:
+    except Exception as e:
         print(e.msg)
         pass #TODO Handling
 
@@ -229,7 +228,7 @@ def validate_peers_msg(msg_dict):
                 raise InvalidFormatException(f"Invalid peers format {peer}")
     except MalformedMsgException:
         raise InvalidFormatException("Malformed keys")
-    except error as e:
+    except Exception as e:
         print(f"Error: {e}")
 
 # raise an exception if not valid
@@ -579,8 +578,10 @@ async def resupply_connections():
             if diff > 0:
                 peers = peer_db.load_peers()
                 new_peers = peers.difference(CONNECTIONS)
-                peer_resupply.extend(random.sample(new_peers, min(len(PEERS), diff)))
-                PEERS.update(peer_resupply)
+                if len(new_peers) > 0:
+                    random_new_peers = random.sample(list(new_peers), min(len(new_peers), diff))
+                    peer_resupply.extend(random_new_peers)
+                    PEERS.update(peer_resupply)
 
     print(f"Attempting to connect to {len(peer_resupply)} re_supply peers")
     for peer in peer_resupply:

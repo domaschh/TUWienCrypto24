@@ -3,7 +3,7 @@ import csv
 from Peer import Peer, is_valid_peer
 from typing import Iterable, Set
 
-from src.exceptions import PeerValidationError
+from exceptions import PeerValidationError
 
 PEER_DB_FILE = "peers.csv"
 

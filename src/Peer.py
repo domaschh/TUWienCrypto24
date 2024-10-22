@@ -1,7 +1,7 @@
 import ipaddress
 import re
 
-from src.exceptions import PeerValidationError
+from exceptions import PeerValidationError
 
 """
 host
