@@ -38,7 +38,6 @@ LISTEN_CFG = {
         "port": const.PORT
 }
 
-# Add peer to your list of peers
 def add_peer(peer):
     with PEERS_LOCK:
         PEERS.add(peer)
@@ -50,13 +49,11 @@ def get_bootstrap_peers():
         PEERS.update(bootsrap_peers)
     return bootsrap_peers
 
-# Add connection if not already open
 def add_connection(peer, queue):
     with CONNECTIONS_LOCK:
         CONNECTIONS[peer] = queue
 
 
-# Delete connection
 def del_connection(peer):
     with CONNECTIONS_LOCK:
         if peer in CONNECTIONS:
@@ -66,7 +63,6 @@ def del_connection(peer):
             print(f"No active connection found for {peer}")
 
 
-# Make msg objects
 def mk_error_msg(error_str, error_name):
     return {
         "type": "error",
@@ -96,7 +92,7 @@ def mk_getpeers_msg():
 #behaviour.
 def mk_peers_msg():
 
-    myself: Peer = (Peer(const.ADDRESS, const.PORT))  # TODO how do we find out or ip address or DNS??
+    myself: Peer = (Peer(const.ADDRESS, const.PORT))  # TODO add actual static IP address of digital ocean I guess??
     with PEERS_LOCK:
         PEERS.update(peer_db.load_peers())
         selected_peers: [Peer] = random.sample(list(PEERS), min(len(PEERS), const.MAX_PEERS_IN_MSG-1))
@@ -361,8 +357,6 @@ def get_block_txs(txids):
 def store_block_utxo_height(block, utxo, height: int):
     pass # TODO
 
-# runs a task to verify a block
-# raises blockverifyexception
 async def verify_block_task(block_dict):
     pass # TODO
 
@@ -428,11 +422,7 @@ def handle_msg(msg_dict):
         pass # TODO
 
 
-# Helper function
 async def handle_queue_msg(msg: Dict[str, Any], writer: asyncio.StreamWriter):
-    """
-    Handle messages from the outgoing queue and send them to the peer.
-    """
     try:
         if msg is not None:
             await write_msg(writer, msg)
@@ -445,7 +435,6 @@ async def handle_queue_msg(msg: Dict[str, Any], writer: asyncio.StreamWriter):
         await writer.wait_closed()
         del_connection(writer.get_extra_info('peername'))
 
-# how to handle a connection
 async def handle_connection(reader, writer):
     read_task = None
     queue_task = None
@@ -469,8 +458,6 @@ async def handle_connection(reader, writer):
         return
 
     try:
-        # Send initial messages
-        # Complete handshake
         await perform_handshake(reader, writer)
         await write_msg(writer, mk_getpeers_msg())
 
@@ -481,20 +468,17 @@ async def handle_connection(reader, writer):
             if queue_task is None:
                 queue_task = asyncio.create_task(queue.get())
 
-            # wait for network or queue messages
             done, pending = await asyncio.wait([read_task, queue_task],
                     return_when = asyncio.FIRST_COMPLETED)
             if read_task in done:
                 msg_str = read_task.result()
                 read_task = None
-            # handle queue messages
             if queue_task in done:
                 queue_msg = queue_task.result()
                 queue_task = None
                 await handle_queue_msg(queue_msg, writer)
                 queue.task_done()
 
-            # if no message was received over the network continue
             if read_task is not None:
                 continue
 
@@ -507,11 +491,9 @@ async def handle_connection(reader, writer):
     except InvalidFormatException as e:
         print(f"{peer}: Invalid format error: {str(e)}")
         await write_msg(writer, mk_error_msg(str(e), "INVALID_FORMAT"))
-        #remove node from known_peers
         peer_db.del_peer(peer)
     except InvalidHandshakeException as e:
         print(f"{peer}: Handshake error: {str(e)}")
-        #remove node from known_peers
         peer_db.del_peer(peer)
         await write_msg(writer, mk_error_msg(str(e), "INVALID_HANDSHAKE"))
     except asyncio.exceptions.TimeoutError:
@@ -528,6 +510,12 @@ async def handle_connection(reader, writer):
             #pass
     except Exception as e:
         print("{}: {}".format(peer, str(e)))
+        writer.close()
+        del_connection(peer)
+        if read_task is not None and not read_task.done():
+            read_task.cancel()
+        if queue_task is not None and not queue_task.done():
+            queue_task.cancel()
     finally:
         print("Closing connection with {}".format(peer))
         writer.close()
