@@ -1,3 +1,4 @@
+import threading
 from sre_constants import error
 from typing import Dict, Any
 
@@ -30,7 +31,8 @@ BLOCK_VERIFY_TASKS = dict()
 BLOCK_WAIT_LOCK = None
 TX_WAIT_LOCK = None
 MEMPOOL = mempool.Mempool(const.GENESIS_BLOCK_ID, {})
-active_connections: Dict[tuple, asyncio.StreamWriter] = {}
+PEERS_LOCK = threading.Lock()
+CONNECTIONS_LOCK = threading.Lock()
 
 LISTEN_CFG = {
         "address": const.ADDRESS,
@@ -39,43 +41,31 @@ LISTEN_CFG = {
 
 # Add peer to your list of peers
 def add_peer(peer):
-    PEERS.add(peer)
+    with PEERS_LOCK:
+        PEERS.add(peer)
+
+def get_bootstrap_peers():
+    print("Loading bootsrap peers...")
+    bootsrap_peers =  peer_db.get_bootstrap_peers()
+    with PEERS_LOCK:
+        PEERS.update(bootsrap_peers)
+    return bootsrap_peers
 
 # Add connection if not already open
-def add_connection(peer: tuple, writer: asyncio.StreamWriter):
-    """
-    Add a new connection to the active connections dictionary.
-    """
-    active_connections[peer] = writer
-    print(f"Added new connection to {peer}")
+def add_connection(peer, queue):
+    with CONNECTIONS_LOCK:
+        CONNECTIONS[peer] = queue
 
 
 # Delete connection
-def del_connection(peer: tuple):
-    """
-    Remove a connection from the active connections dictionary.
-    """
-    if peer in active_connections:
-        del active_connections[peer]
-        print(f"Removed connection to {peer}")
-    else:
-        print(f"No active connection found for {peer}")
+def del_connection(peer):
+    with CONNECTIONS_LOCK:
+        if peer in CONNECTIONS:
+            del CONNECTIONS[peer]
+            print(f"Removed connection to {peer}")
+        else:
+            print(f"No active connection found for {peer}")
 
-
-async def broadcast_msg(msg: Dict[str, Any]):
-    """
-    Broadcast a message to all active connections.
-    """
-    for peer, writer in active_connections.items():
-        try:
-            await write_msg(writer, msg)
-            print(f"Broadcasted message to {peer}: {msg}")
-        except Exception as e:
-            print(f"Error broadcasting message to {peer}: {str(e)}")
-            # If there's an error sending the message, we might want to close the connection
-            writer.close()
-            await writer.wait_closed()
-            del_connection(peer)
 
 # Make msg objects
 def mk_error_msg(error_str, error_name):
@@ -108,10 +98,10 @@ def mk_getpeers_msg():
 def mk_peers_msg():
 
     myself: Peer = (Peer(const.ADDRESS, const.PORT))  # TODO how do we find out or ip address or DNS??
-    PEERS.update(peer_db.load_peers())
-
-    selected_peers: [Peer] = random.sample(list(PEERS), min(len(PEERS), const.MAX_PEERS_IN_MSG-1))
-    selected_peers.insert(0, myself)
+    with PEERS_LOCK:
+        PEERS.update(peer_db.load_peers())
+        selected_peers: [Peer] = random.sample(list(PEERS), min(len(PEERS), const.MAX_PEERS_IN_MSG-1))
+        selected_peers.insert(0, myself)
     return {
         "type": "peers",
         "peers": [peer.host_formated for peer in selected_peers]
@@ -143,12 +133,18 @@ def mk_getmempool_msg():
 
 # parses a message as json. returns decoded message
 def parse_msg(msg_str):
-    return json.loads(msg_str.decode())
+    try:
+        json_msg = json.loads(msg_str.decode())
+        canon = json.loads(canonicalize(json_msg))
+        return canon
+    except error as e:
+        print(e.msg)
+        pass #TODO Handling
 
 # Send data over the network as a message
 async def write_msg(writer: asyncio.StreamWriter, msg: Dict[str, Any]):
     try:
-        writer.write(json.dumps(msg).encode() + b'\n')
+        writer.write(canonicalize(msg) + b'\n')
         await writer.drain()
     except Exception as e:
         print(f"Error: {e} with message {msg}")
@@ -311,8 +307,9 @@ def handle_peers_msg(msg_dict):
         for peer in peers:
             host, port = peer.split(":")
             p = Peer(host, int(port))
+        with PEERS_LOCK:
             peer_db.store_peer(p)
-        PEERS.update(peer_db.load_peers())
+            PEERS.update(peer_db.load_peers())
     except MalformedMsgException:
         raise InvalidFormatException("Malformed keys")
     except InvalidFormatException as e:
@@ -405,7 +402,6 @@ async def handle_mempool_msg(msg_dict):
 
 
 def handle_msg(msg_dict):
-    print(f"Handling msg... {msg_dict}")
     msg_type = msg_dict['type']
     if msg_type == 'hello':
         pass #TODO
@@ -439,8 +435,10 @@ async def handle_queue_msg(msg: Dict[str, Any], writer: asyncio.StreamWriter):
     Handle messages from the outgoing queue and send them to the peer.
     """
     try:
-        await write_msg(writer, msg)
-        print(f"Sent message to {writer.get_extra_info('peername')}: {msg}")
+        if msg is not None:
+            await write_msg(writer, msg)
+            print(f"Sent message to {writer.get_extra_info('peername')}: {msg}")
+
     except Exception as e:
         print(f"Error sending message to {writer.get_extra_info('peername')}: {str(e)}")
         # If there's an error sending the message, we might want to close the connection
@@ -459,10 +457,12 @@ async def handle_connection(reader, writer):
         peer = writer.get_extra_info('peername')
         if not peer:
             raise Exception("Failed to get peername!")
+        add_connection(peer, queue)
 
         print("New connection with {}".format(peer))
     except Exception as e:
         print(str(e))
+        del_connection(peer)
         try:
             writer.close()
         except:
@@ -499,7 +499,8 @@ async def handle_connection(reader, writer):
             if read_task is not None:
                 continue
 
-            print(f"Received: {msg_str}")
+            #handle received message
+            print(f" Handling msg From: {peer}: {msg_str}")
             await queue.put(handle_msg(parse_msg(msg_str)))
 
             # for now, close connection
@@ -507,8 +508,12 @@ async def handle_connection(reader, writer):
     except InvalidFormatException as e:
         print(f"{peer}: Invalid format error: {str(e)}")
         await write_msg(writer, mk_error_msg(str(e), "INVALID_FORMAT"))
+        #remove node from known_peers
+        peer_db.del_peer(peer)
     except InvalidHandshakeException as e:
         print(f"{peer}: Handshake error: {str(e)}")
+        #remove node from known_peers
+        peer_db.del_peer(peer)
         await write_msg(writer, mk_error_msg(str(e), "INVALID_HANDSHAKE"))
     except asyncio.exceptions.TimeoutError:
         print("{}: Timeout".format(peer))
@@ -518,10 +523,10 @@ async def handle_connection(reader, writer):
             pass
     except MessageException as e:
         print("{}: {}".format(peer, str(e)))
-        try:
-            await write_msg(writer, mk_error_msg(e.NETWORK_ERROR_MESSAGE))
-        except:
-            pass
+        #try:
+            #await write_msg(writer, mk_error_msg(e.NETWORK_ERROR_MESSAGE,))
+        #except:
+            #pass
     except Exception as e:
         print("{}: {}".format(peer, str(e)))
     finally:
@@ -545,6 +550,7 @@ async def connect_to_node(peer: Peer):
     await handle_connection(reader, writer)
 
 
+
 async def listen():
     server = await asyncio.start_server(handle_connection, LISTEN_CFG['address'],
             LISTEN_CFG['port'], limit=const.RECV_BUFFER_LIMIT)
@@ -557,12 +563,28 @@ async def listen():
 # bootstrap peers. connect to hardcoded peers
 async def bootstrap():
     print("Connecting to bootstrap peers...")
-    for peer in PEERS:
+
+    #load bootsrap peers
+    bootstrap_peers = get_bootstrap_peers()
+    for peer in bootstrap_peers:
         await connect_to_node(peer)
 
 # connect to some peers
-def resupply_connections():
-    pass # TODO decide on when to connect to how many etc. decide on policy?
+async def resupply_connections():
+    print("Resupplying peers...")
+    peer_resupply = []
+    with PEERS_LOCK:
+        with CONNECTIONS_LOCK:
+            diff = const.PEERS_RESUPPLY_LIMIT - len(CONNECTIONS)
+            if diff > 0:
+                peers = peer_db.load_peers()
+                new_peers = peers.difference(CONNECTIONS)
+                peer_resupply.extend(random.sample(new_peers, min(len(PEERS), diff)))
+                PEERS.update(peer_resupply)
+
+    print(f"Attempting to connect to {len(peer_resupply)} re_supply peers")
+    for peer in peer_resupply:
+        connection_task = asyncio.create_task(connect_to_node(peer))
 
 
 async def init():
@@ -571,20 +593,21 @@ async def init():
     global TX_WAIT_LOCK
     TX_WAIT_LOCK = asyncio.Condition()
 
-    print("Loading peers...")
-    PEERS.update(peer_db.load_peers())
+
     #print("Add ourselves as peer???")
     #PEERS.add(Peer(const.ADDRESS, const.PORT))#TODO how do we find out or ip address or DNS??
+
     bootstrap_task = asyncio.create_task(bootstrap())
     listen_task = asyncio.create_task(listen())
 
     # Service loop
     while True:
         print("Service loop reporting in.")
-        print("Open connections: {}".format(set(CONNECTIONS.keys())))
+        with CONNECTIONS_LOCK:
+            print("Open connections: {}".format(len(CONNECTIONS)))
 
         # Open more connections if necessary
-        resupply_connections()
+        await resupply_connections()
 
         await asyncio.sleep(const.SERVICE_LOOP_DELAY)
 

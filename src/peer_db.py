@@ -36,3 +36,18 @@ def load_peers() -> Set[Peer]:
         #TODO decide todo
         pass
     return peers
+
+def get_bootstrap_peers() -> Set[Peer]:
+    peers = set()
+    peers.add(Peer("128.130.122.101", 18018))
+    return peers
+
+def del_peer(peer: Peer):
+    peers = load_peers()
+    if peer in peers:
+        peers.remove(peer)
+
+    with open(PEER_DB_FILE, 'w', newline='') as f:
+        writer = csv.writer(f)
+        for p in peers:
+            writer.writerow([p.host, p.port])
