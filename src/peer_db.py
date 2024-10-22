@@ -24,7 +24,9 @@ def load_peers() -> Set[Peer]:
     try:
         with open(PEER_DB_FILE, 'r', newline='') as f:
             reader = csv.reader(f)
-            for row in reader:
+            for i,row in enumerate(reader):
+                if i == 0:
+                    continue
                 if len(row) == 2:
                     try:
                         peer = Peer(row[0], int(row[1]))

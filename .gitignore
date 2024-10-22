@@ -2,6 +2,5 @@
 /message/__pycache__
 *.swp
 .vscode/
-peers.csv
 ./venv
 /venv
