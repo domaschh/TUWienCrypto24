@@ -4,8 +4,12 @@ class PeerValidationError(Exception):
         self.error_name = error_name
 
 
-class HandshakeException(Exception):
+class InvalidHandshakeException(Exception):
     pass
+
+class InvalidFormatException(Exception):
+    pass
+
 
 class MessageException(Exception):
     NETWORK_ERROR_MESSAGE = "Network error"

@@ -1,4 +1,7 @@
+from sre_constants import error
 from typing import Dict, Any
+
+import jcs
 
 from Peer import Peer
 import constants as const
@@ -17,7 +20,8 @@ import re
 import sqlite3
 import sys
 
-from src.exceptions import HandshakeException
+from src.Peer import is_valid_peer
+from src.exceptions import InvalidHandshakeException, InvalidFormatException
 
 PEERS = set()
 CONNECTIONS = dict()
@@ -102,11 +106,15 @@ def mk_getpeers_msg():
 #there may are (edge) cases where forgetting a node is not possible - we will not check this
 #behaviour.
 def mk_peers_msg():
-    peers = peer_db.load_peers()
-    selected_peers: [Peer] = random.sample(list(peers), min(len(peers), const.MAX_PEERS_IN_MSG))
+
+    myself: Peer = (Peer(const.ADDRESS, const.PORT))  # TODO how do we find out or ip address or DNS??
+    PEERS.update(peer_db.load_peers())
+
+    selected_peers: [Peer] = random.sample(list(PEERS), min(len(PEERS), const.MAX_PEERS_IN_MSG-1))
+    selected_peers.insert(0, myself)
     return {
         "type": "peers",
-        "peers": [str(peer) for peer in selected_peers]
+        "peers": [peer.host_formated for peer in selected_peers]
     }
 
 def mk_getobject_msg(objid):
@@ -135,48 +143,63 @@ def mk_getmempool_msg():
 
 # parses a message as json. returns decoded message
 def parse_msg(msg_str):
-    pass # TODO
+    return json.loads(msg_str.decode())
 
 # Send data over the network as a message
 async def write_msg(writer: asyncio.StreamWriter, msg: Dict[str, Any]):
-    writer.write(json.dumps(msg).encode() + b'\n')
-    await writer.drain()
+    try:
+        writer.write(json.dumps(msg).encode() + b'\n')
+        await writer.drain()
+    except Exception as e:
+        print(f"Error: {e} with message {msg}")
+
 
 async def read_msg(reader: asyncio.StreamReader) -> Dict[str, Any]:
     data = await reader.readline()
-    return json.loads(data.decode())
+    return parse_msg(data)
 
 
 # Check if message contains no invalid keys,
 # raises a MalformedMsgException
 def validate_allowed_keys(msg_dict, allowed_keys, msg_type):
-    pass # TODO
+    unwanted_keys = set(msg_dict.keys()) - allowed_keys
+    if unwanted_keys:
+        raise MalformedMsgException("Additional invalid keys")
 
 
 # Validate the hello message
 # raises an exception
-def validate_hello_msg(msg: Dict[str, Any]):
-    if msg.get("type") != "hello":
-        raise HandshakeException("First message must be a hello message")
-    if "version" not in msg or "agent" not in msg:
-        raise HandshakeException("Missing required keys in hello message")
-    if not msg["version"].startswith("0.10."):
-        raise HandshakeException("Invalid version format")
-    if len(msg["agent"]) > 128 or not msg["agent"].isascii():
-        raise HandshakeException("Invalid agent format")
+def validate_hello_msg(msg_dict: Dict[str, Any]):
+    allowed_keys = {'type', 'version', 'agent'}
+    try:
+        validate_allowed_keys(msg_dict, allowed_keys, msg_dict.get('type'))
+    except MalformedMsgException:
+        raise InvalidFormatException("Malformed keys")
+
+    if msg_dict.get("type") != "hello":
+        raise InvalidHandshakeException("First message must be a hello message")
+    if "version" not in msg_dict or "agent" not in msg_dict:
+        raise InvalidFormatException("Missing required keys in hello message")
+    if not re.fullmatch(r'0\.10\.\d', msg_dict["version"]):
+        raise InvalidFormatException("Invalid version format")
+    if len(msg_dict["agent"]) > 128 or not msg_dict["agent"].isascii():
+        raise InvalidFormatException("Invalid agent format")
 
 async def perform_handshake(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     # Send our hello message
+    print(f"Performing handshake...")
     await write_msg(writer, mk_hello_msg())
-
     # Wait for their hello message
     try:
         msg = await asyncio.wait_for(read_msg(reader), timeout=const.HELLO_MSG_TIMEOUT)
         validate_hello_msg(msg)
+        print(f"... Handshake complete and valid")
+    except InvalidFormatException as e:
+         raise InvalidFormatException(f"Invalid format: {str(e)}")
     except asyncio.TimeoutError:
-        raise HandshakeException("Handshake timeout")
+        raise InvalidHandshakeException("Handshake timeout")
     except json.JSONDecodeError:
-        raise HandshakeException("Invalid JSON in hello message")
+        raise InvalidHandshakeException("Invalid JSON in hello message")
 
 
 # returns true iff host_str is a valid hostname
@@ -193,11 +216,33 @@ def validate_peer_str(peer_str):
 
 # raise an exception if not valid
 def validate_peers_msg(msg_dict):
-    pass # TODO
+    allowed_keys = {'type', 'peers'}
+    try:
+        validate_allowed_keys(msg_dict, allowed_keys, None)
+        if msg_dict.get("type") != "peers":
+            raise InvalidFormatException("Invalid peers format")
+        if "peers" not in msg_dict:
+            raise InvalidFormatException("Missing peers key in peers message")
+        peers =  msg_dict.get("peers")
+        if len(peers) > 30:
+            raise InvalidFormatException("Invalid peers format: Too many peers sent")
+        for peer in peers:
+            host, port = peer.split(":")
+            p: Peer = Peer(host, int(port))
+            if not is_valid_peer(p):
+                raise InvalidFormatException(f"Invalid peers format {peer}")
+    except MalformedMsgException:
+        raise InvalidFormatException("Malformed keys")
+    except error as e:
+        print(f"Error: {e}")
 
 # raise an exception if not valid
 def validate_getpeers_msg(msg_dict):
-    pass # TODO
+    allowed_keys = {'type'}
+    try:
+        validate_allowed_keys(msg_dict, allowed_keys, None)
+    except MalformedMsgException:
+        raise InvalidFormatException("Malformed keys")
 
 # raise an exception if not valid
 def validate_getchaintip_msg(msg_dict):
@@ -260,7 +305,28 @@ def validate_msg(msg_dict):
 
 
 def handle_peers_msg(msg_dict):
-    pass # TODO
+    try:
+        validate_msg(msg_dict)
+        peers = msg_dict.get('peers')
+        for peer in peers:
+            host, port = peer.split(":")
+            p = Peer(host, int(port))
+            peer_db.store_peer(p)
+        PEERS.update(peer_db.load_peers())
+    except MalformedMsgException:
+        raise InvalidFormatException("Malformed keys")
+    except InvalidFormatException as e:
+        raise InvalidFormatException(f"Invalid format: {str(e)}")
+
+
+def handle_getpeers_msg(msg_dict):
+    try:
+        validate_msg(msg_dict)
+        message = mk_peers_msg()
+        return message
+    except InvalidFormatException as e:
+        raise InvalidHandshakeException(f"Invalid format: {str(e)}")
+
 
 
 def handle_error_msg(msg_dict, peer_self):
@@ -337,6 +403,36 @@ async def handle_chaintip_msg(msg_dict):
 async def handle_mempool_msg(msg_dict):
     pass # TODO
 
+
+def handle_msg(msg_dict):
+    print(f"Handling msg... {msg_dict}")
+    msg_type = msg_dict['type']
+    if msg_type == 'hello':
+        pass #TODO
+    elif msg_type == 'getpeers':
+        return handle_getpeers_msg(msg_dict)
+    elif msg_type == 'peers':
+        return handle_peers_msg(msg_dict)
+    elif msg_type == 'getchaintip':
+        pass #TODO
+    elif msg_type == 'getmempool':
+        pass #TODO
+    elif msg_type == 'error':
+        pass #TODO
+    elif msg_type == 'ihaveobject':
+        pass #TODO
+    elif msg_type == 'getobject':
+        pass #TODO
+    elif msg_type == 'object':
+        pass #TODO
+    elif msg_type == 'chaintip':
+        pass #TODO
+    elif msg_type == 'mempool':
+        pass #TODO
+    else:
+        pass # TODO
+
+
 # Helper function
 async def handle_queue_msg(msg: Dict[str, Any], writer: asyncio.StreamWriter):
     """
@@ -377,7 +473,6 @@ async def handle_connection(reader, writer):
         # Send initial messages
         # Complete handshake
         await perform_handshake(reader, writer)
-
         await write_msg(writer, mk_getpeers_msg())
 
         msg_str = None
@@ -405,11 +500,14 @@ async def handle_connection(reader, writer):
                 continue
 
             print(f"Received: {msg_str}")
-            # todo handle message
+            await queue.put(handle_msg(parse_msg(msg_str)))
 
             # for now, close connection
-            raise MessageException("closing connection")
-    except HandshakeException as e:
+            #raise MessageException("closing connection")
+    except InvalidFormatException as e:
+        print(f"{peer}: Invalid format error: {str(e)}")
+        await write_msg(writer, mk_error_msg(str(e), "INVALID_FORMAT"))
+    except InvalidHandshakeException as e:
         print(f"{peer}: Handshake error: {str(e)}")
         await write_msg(writer, mk_error_msg(str(e), "INVALID_HANDSHAKE"))
     except asyncio.exceptions.TimeoutError:
@@ -458,6 +556,7 @@ async def listen():
 
 # bootstrap peers. connect to hardcoded peers
 async def bootstrap():
+    print("Connecting to bootstrap peers...")
     for peer in PEERS:
         await connect_to_node(peer)
 
@@ -472,8 +571,10 @@ async def init():
     global TX_WAIT_LOCK
     TX_WAIT_LOCK = asyncio.Condition()
 
+    print("Loading peers...")
     PEERS.update(peer_db.load_peers())
-    PEERS.add(Peer("afterhostingaddresss", const.PORT))#TODO how do we find out or ip address or DNS??
+    #print("Add ourselves as peer???")
+    #PEERS.add(Peer(const.ADDRESS, const.PORT))#TODO how do we find out or ip address or DNS??
     bootstrap_task = asyncio.create_task(bootstrap())
     listen_task = asyncio.create_task(listen())
 

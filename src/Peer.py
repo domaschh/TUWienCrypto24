@@ -16,7 +16,7 @@ class Peer:
             raise PeerValidationError("Peer creation is false", "PeerValidationError")
 
     def __str__(self) -> str:
-        return f"{self.host_formated}:{self.port}"
+        return f"{self.host_formated}"
 
     def __eq__(self, o: object) -> bool:
         return isinstance(o, Peer) and self.host == o.host \
